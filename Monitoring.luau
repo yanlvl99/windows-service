@@ -7,10 +7,7 @@ local HWND_TYPE = "u64"
 local Monitoring = {}
 
 function Monitoring.startMonitoring(instance, rate)
-	if instance._monitoring then
-		return
-	end
-	instance._monitoring = true
+	-- A verificação de _monitoring já é feita pelo ffi-like-roblox
 
 	task.spawn(function()
 		local last = { x = instance.X, y = instance.Y, w = instance.Width, h = instance.Height }

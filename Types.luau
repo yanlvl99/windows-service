@@ -5,11 +5,16 @@ export type AlertInstance = { Response: Signal.Signal<string, number>, _task: th
 export type Bounds = { X: number, Y: number, Width: number, Height: number }
 export type Point = { X: number, Y: number }
 
---[[
-	@Window Janela
-	@WindowModule Janela
-]]
+-- Objeto retornado por métodos que suportam :Wait()
+export type Awaitable = {
+	Wait: (self: Awaitable, timeout: number?) -> boolean,
+}
+
 export type Window = {
+	-- Internal (HWND)
+	_ptr: number,
+
+	-- Propriedades
 	Title: string,
 	ClassName: string,
 	ProcessId: number,
@@ -33,12 +38,16 @@ export type Window = {
 	Bounds: Bounds,
 	ClientRect: { Width: number, Height: number },
 
+	-- Métodos com :Wait() retornando Awaitable
+	Close: (self: Window) -> Awaitable,
+	Maximize: (self: Window) -> Awaitable,
+	Minimize: (self: Window) -> Awaitable,
+	Restore: (self: Window) -> Awaitable,
+	Focus: (self: Window) -> Awaitable,
+
+	-- Outros métodos
 	Show: (self: Window, mode: number?) -> (),
 	Hide: (self: Window) -> (),
-	Minimize: (self: Window) -> (),
-	Maximize: (self: Window) -> (),
-	Restore: (self: Window) -> (),
-	Close: (self: Window) -> (),
 	Flash: (self: Window) -> (),
 	Move: (self: Window, x: number, y: number, w: number, h: number) -> (),
 	SetFocus: (self: Window) -> (),
@@ -48,6 +57,7 @@ export type Window = {
 	EnableMonitoring: (self: Window, rate: number?) -> (),
 	StopMonitoring: (self: Window) -> (),
 	Destroy: (self: Window) -> (),
+	WaitForClose: (self: Window, timeout: number?) -> boolean,
 
 	SendText: (self: Window, text: string) -> (),
 	TypeText: (self: Window, text: string) -> (),
@@ -60,7 +70,6 @@ export type Window = {
 	Hotkey: (self: Window, ...number) -> (),
 
 	IsResponding: (self: Window) -> boolean,
-	WaitForClose: (self: Window, timeout: number?) -> boolean,
 	GetChildren: (self: Window) -> { Window },
 	GetAllChildren: (self: Window) -> { Window },
 	GetParent: (self: Window) -> Window?,
@@ -83,6 +92,7 @@ export type Window = {
 	Pin: (self: Window, clickThrough: boolean?) -> (),
 	Unpin: (self: Window) -> (),
 
+	-- Signals (eventos)
 	Closed: Signal.Signal<>,
 	Moved: Signal.Signal<number, number>,
 	Resized: Signal.Signal<number, number>,
@@ -97,18 +107,35 @@ export type Window = {
 export type WindowModule = {
 	new: (cls: string?, title: string?) -> Window?,
 	fromPointer: (ptr: any) -> Window,
+
+	-- Busca estilo Roblox
+	Find: (titleOrFilter: string | ((Window) -> boolean)?) -> { Window },
+	FindFirst: (titleOrFilter: string | ((Window) -> boolean)?) -> Window?,
+	FindFirstOfClass: (className: string) -> Window?,
+
+	-- Criação de processos
+	Spawn: (command: string, timeout: number?) -> Window?,
+	SpawnAsync: (command: string, timeout: number?) -> { window: Window?, ready: boolean },
+
+	-- Funções de busca
 	GetWindows: (filter: ((Window) -> boolean)?) -> { Window },
 	GetFocusedWindow: () -> Window,
 	GetActiveWindow: () -> Window,
 	GetDesktopWindow: () -> Window,
 	FindByPid: (pid: number) -> { Window },
+	WaitFor: (title: string, timeout: number?) -> Window?,
+	GetPidByTitle: (title: string) -> number?,
+
+	-- Alertas
 	Alert: (hwnd: number, text: string, title: string, type: number) -> number,
 	AlertAsync: (text: string, title: string?, type: number?) -> AlertInstance,
-	WaitFor: (title: string, timeout: number?) -> Window?,
+
+	-- Cursor
 	GetCursorPosition: () -> Point,
 	SetCursorPosition: (x: number, y: number) -> (),
 	GlobalClick: (x: number, y: number, button: string?) -> (),
-	GetPidByTitle: (title: string) -> number?,
+
+	-- Teclado global
 	PressKey: (vk: number) -> (),
 	ReleaseKey: (vk: number) -> (),
 	Tap: (vk: number) -> (),
@@ -116,6 +143,8 @@ export type WindowModule = {
 	Type: (text: string) -> (),
 	IsKeyDown: (vk: number) -> boolean,
 	WaitForKey: (vk: number, timeout: number?) -> boolean,
+
+	-- Outros
 	Enums: any,
 }
 

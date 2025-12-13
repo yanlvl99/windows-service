@@ -2,31 +2,121 @@
 local ffi = require("@lune/ffi")
 local task = require("@lune/task")
 local Monitoring = require("@windows-service/Monitoring")
+local Signal = require("@signals-like-roblox")
 
 local HWND_TYPE = "u64"
+
+-- Helper: polling até condição
+local function waitUntil(checkFn, timeout)
+	local start = os.clock()
+	while not checkFn() do
+		if timeout and (os.clock() - start) >= timeout then
+			return false
+		end
+		task.wait(0.05)
+	end
+	return true
+end
 
 return function(instance, WindowImpl)
 	if not instance then
 		return nil
 	end
 
+	local lib, ptr = instance._lib, instance._ptr
+
+	-- Lazy monitoring
+	local function ensureMonitoring()
+		if instance._monitoring or instance._destroyed then
+			return
+		end
+		instance._monitoring = true
+		Monitoring.startMonitoring(instance, 0.1)
+	end
+
+	-- Setup signals
+	for _, name in ipairs({
+		"Closed",
+		"Moved",
+		"Resized",
+		"Minimized",
+		"Maximized",
+		"Restored",
+		"Focused",
+		"Unfocused",
+		"Changed",
+	}) do
+		if instance[name] then
+			instance[name]._onFirstConnect = ensureMonitoring
+		end
+	end
+
+	-- ========== ACTIONS (propriedade + método) ==========
+	-- win.Close:Wait() ou win:Close()
+
+	instance.Close = Signal.newAction(function()
+		lib:call("PostMessageA", "bool", { HWND_TYPE, "i32", "i32", "i32" }, ptr, 16, 0, 0)
+	end, function(t)
+		return waitUntil(function()
+			return not lib:call("IsWindow", "bool", { HWND_TYPE }, ptr)
+		end, t)
+	end, ensureMonitoring)
+
+	instance.Maximize = Signal.newAction(function()
+		lib:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, ptr, 3)
+	end, function(t)
+		return waitUntil(function()
+			return instance.IsMaximized
+		end, t)
+	end, ensureMonitoring)
+
+	instance.Minimize = Signal.newAction(function()
+		lib:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, ptr, 6)
+	end, function(t)
+		return waitUntil(function()
+			return instance.IsMinimized
+		end, t)
+	end, ensureMonitoring)
+
+	instance.Restore = Signal.newAction(function()
+		lib:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, ptr, 9)
+	end, function(t)
+		return waitUntil(function()
+			return not instance.IsMinimized and not instance.IsMaximized
+		end, t)
+	end, ensureMonitoring)
+
+	instance.Focus = Signal.newAction(function()
+		lib:call("SetForegroundWindow", "bool", { HWND_TYPE }, ptr)
+	end, function(t)
+		return waitUntil(function()
+			return instance.IsFocused
+		end, t)
+	end, ensureMonitoring)
+
+	instance.Show = Signal.newAction(function()
+		lib:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, ptr, 1)
+	end, function(t)
+		return waitUntil(function()
+			return instance.IsVisible
+		end, t)
+	end)
+
+	instance.Hide = Signal.newAction(function()
+		lib:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, ptr, 0)
+	end, function(t)
+		return waitUntil(function()
+			return not instance.IsVisible
+		end, t)
+	end)
+
+	-- ========== MÉTODOS SIMPLES ==========
+
 	function instance:EnableMonitoring(rate)
 		Monitoring.startMonitoring(self, rate)
 	end
-
 	function instance:StopMonitoring()
 		self._monitoring = false
-	end
-
-	function instance:WaitForClose(timeout)
-		local start = os.clock()
-		while self._lib:call("IsWindow", "bool", { HWND_TYPE }, self._ptr) do
-			if timeout and (os.clock() - start) >= timeout then
-				return false
-			end
-			task.wait(0.1)
-		end
-		return true
 	end
 
 	function instance:GetChildren()
@@ -35,96 +125,15 @@ return function(instance, WindowImpl)
 			table.insert(children, WindowImpl.fromPointer(h))
 			return 1
 		end, "i32", { HWND_TYPE, "i64" })
-		self._lib:call("EnumChildWindows", "bool", { HWND_TYPE, "pointer", "i64" }, self._ptr, cb.ptr, 0)
+		lib:call("EnumChildWindows", "bool", { HWND_TYPE, "pointer", "i64" }, ptr, cb.ptr, 0)
 		return children
 	end
 
 	function instance:GetParent()
-		local h = self._lib:call("GetParent", HWND_TYPE, { HWND_TYPE }, self._ptr)
+		local h = lib:call("GetParent", HWND_TYPE, { HWND_TYPE }, ptr)
 		return h ~= 0 and WindowImpl.fromPointer(h) or nil
 	end
 
-	-- Shake: treme a janela
-	function instance:Shake(intensity, duration)
-		local int = intensity or 10
-		local dur = duration or 0.3
-		local ox, oy = self.X, self.Y
-		local steps = math.floor(dur / 0.03)
-		for _ = 1, steps do
-			self.X = ox + math.random(-int, int)
-			self.Y = oy + math.random(-int, int)
-			task.wait(0.03)
-		end
-		self.X, self.Y = ox, oy
-	end
-
-	-- Center: centraliza na tela
-	function instance:Center()
-		local screenW = self._lib:call("GetSystemMetrics", "i32", { "i32" }, 0) -- SM_CXSCREEN
-		local screenH = self._lib:call("GetSystemMetrics", "i32", { "i32" }, 1) -- SM_CYSCREEN
-		local newX = math.floor((screenW - self.Width) / 2)
-		local newY = math.floor((screenH - self.Height) / 2)
-		self:Move(newX, newY, self.Width, self.Height)
-	end
-
-	-- Kill: termina o processo da janela
-	function instance:Kill()
-		local kernel32 = ffi.open("kernel32.dll")
-		local handle = kernel32:call("OpenProcess", "pointer", { "u32", "bool", "u32" }, 1, false, self.ProcessId)
-		if handle and not ffi.isNull(handle) then
-			kernel32:call("TerminateProcess", "bool", { "pointer", "u32" }, handle, 0)
-			kernel32:call("CloseHandle", "bool", { "pointer" }, handle)
-			return true
-		end
-		return false
-	end
-
-	-- FindChild: busca filho por ClassName ou parte do título
-	function instance:FindChild(classOrTitle)
-		for _, child in self:GetChildren() do
-			if child.ClassName:find(classOrTitle, 1, true) or child.Title:find(classOrTitle, 1, true) then
-				return child
-			end
-		end
-		return nil
-	end
-
-	-- DragTo: arrasta a janela animadamente para nova posição
-	function instance:DragTo(targetX, targetY, duration)
-		local dur = duration or 0.3
-		local startX, startY = self.X, self.Y
-		local steps = math.max(1, math.floor(dur / 0.016))
-		for i = 1, steps do
-			local t = i / steps
-			self.X = math.floor(startX + (targetX - startX) * t)
-			self.Y = math.floor(startY + (targetY - startY) * t)
-			task.wait(0.016)
-		end
-	end
-
-	-- Detach: remove do pai (torna janela de nível superior)
-	function instance:Detach()
-		self._lib:call("SetParent", "u64", { "u64", "u64" }, self._ptr, 0)
-	end
-
-	-- Pin: fixa janela sempre visível + transparente (clique atravessa)
-	function instance:Pin(clickThrough)
-		self.AlwaysOnTop = true
-		if clickThrough then
-			local ex = self.ExStyle
-			self.ExStyle = bit32.bor(ex, 0x80000, 0x20) -- WS_EX_LAYERED + WS_EX_TRANSPARENT
-			self.Transparency = 0.1
-		end
-	end
-
-	-- Unpin: remove fixação
-	function instance:Unpin()
-		self.AlwaysOnTop = false
-		local ex = self.ExStyle
-		self.ExStyle = bit32.band(ex, bit32.bnot(0x20)) -- remove WS_EX_TRANSPARENT
-	end
-
-	-- GetAllChildren: retorna todos os filhos recursivamente
 	function instance:GetAllChildren()
 		local all = {}
 		local function collect(win)
@@ -137,95 +146,145 @@ return function(instance, WindowImpl)
 		return all
 	end
 
-	-- === Métodos de teclado para janela específica (via PostMessage) ===
-	local WM_KEYDOWN = 0x0100
-	local WM_KEYUP = 0x0101
+	function instance:FindChild(pattern)
+		for _, child in self:GetChildren() do
+			if child.ClassName:find(pattern, 1, true) or child.Title:find(pattern, 1, true) then
+				return child
+			end
+		end
+		return nil
+	end
 
-	-- Pressiona tecla na janela
+	function instance:Shake(intensity, duration)
+		local int, dur = intensity or 10, duration or 0.3
+		local ox, oy = self.X, self.Y
+		for _ = 1, math.floor(dur / 0.03) do
+			self.X, self.Y = ox + math.random(-int, int), oy + math.random(-int, int)
+			task.wait(0.03)
+		end
+		self.X, self.Y = ox, oy
+	end
+
+	function instance:Center()
+		local sw = lib:call("GetSystemMetrics", "i32", { "i32" }, 0)
+		local sh = lib:call("GetSystemMetrics", "i32", { "i32" }, 1)
+		self:Move(math.floor((sw - self.Width) / 2), math.floor((sh - self.Height) / 2), self.Width, self.Height)
+	end
+
+	function instance:Kill()
+		local k32 = ffi.open("kernel32.dll")
+		local h = k32:call("OpenProcess", "pointer", { "u32", "bool", "u32" }, 1, false, self.ProcessId)
+		if h and not ffi.isNull(h) then
+			k32:call("TerminateProcess", "bool", { "pointer", "u32" }, h, 0)
+			k32:call("CloseHandle", "bool", { "pointer" }, h)
+			return true
+		end
+		return false
+	end
+
+	function instance:DragTo(x, y, dur)
+		dur = dur or 0.3
+		local sx, sy, steps = self.X, self.Y, math.max(1, math.floor(dur / 0.016))
+		for i = 1, steps do
+			local t = i / steps
+			self.X, self.Y = math.floor(sx + (x - sx) * t), math.floor(sy + (y - sy) * t)
+			task.wait(0.016)
+		end
+	end
+
+	function instance:Detach()
+		lib:call("SetParent", "u64", { "u64", "u64" }, ptr, 0)
+	end
+
+	function instance:Pin(clickThrough)
+		self.AlwaysOnTop = true
+		if clickThrough then
+			self.ExStyle = bit32.bor(self.ExStyle, 0x80000, 0x20)
+			self.Transparency = 0.1
+		end
+	end
+
+	function instance:Unpin()
+		self.AlwaysOnTop = false
+		self.ExStyle = bit32.band(self.ExStyle, bit32.bnot(0x20))
+	end
+
+	-- Teclado
+	local WM_KEYDOWN, WM_KEYUP, WM_CHAR = 0x0100, 0x0101, 0x0102
+
 	function instance:PressKey(vk)
-		self._lib:call("PostMessageA", "bool", { "u64", "u32", "u64", "i64" }, self._ptr, WM_KEYDOWN, vk, 0)
+		lib:call("PostMessageA", "bool", { "u64", "u32", "u64", "i64" }, ptr, WM_KEYDOWN, vk, 0)
 	end
-
-	-- Solta tecla na janela
 	function instance:ReleaseKey(vk)
-		self._lib:call("PostMessageA", "bool", { "u64", "u32", "u64", "i64" }, self._ptr, WM_KEYUP, vk, 0)
+		lib:call("PostMessageA", "bool", { "u64", "u32", "u64", "i64" }, ptr, WM_KEYUP, vk, 0)
 	end
-
-	-- Tap na janela
 	function instance:Tap(vk)
 		self:PressKey(vk)
 		self:ReleaseKey(vk)
 	end
 
-	-- Hotkey na janela - foca e usa input global para compatibilidade
 	function instance:Hotkey(...)
 		local keys = { ... }
-		-- Foca a janela primeiro
-		self._lib:call("SetForegroundWindow", "bool", { "u64" }, self._ptr)
+		lib:call("SetForegroundWindow", "bool", { "u64" }, ptr)
 		task.wait(0.05)
-		-- Usa keybd_event global (mais compatível com apps modernos)
 		for _, vk in ipairs(keys) do
-			self._lib:call("keybd_event", "void", { "u8", "u8", "u32", "u64" }, vk, 0, 0, 0)
+			lib:call("keybd_event", "void", { "u8", "u8", "u32", "u64" }, vk, 0, 0, 0)
 		end
 		for i = #keys, 1, -1 do
-			self._lib:call("keybd_event", "void", { "u8", "u8", "u32", "u64" }, keys[i], 0, 2, 0)
+			lib:call("keybd_event", "void", { "u8", "u8", "u32", "u64" }, keys[i], 0, 2, 0)
 		end
 	end
 
-	-- Write em background via WM_CHAR (suporta Unicode)
 	function instance:Write(text)
-		local WM_CHAR = 0x0102
-		-- Decodifica UTF-8 para codepoints
 		local i = 1
 		while i <= #text do
-			local byte = string.byte(text, i)
-			local codepoint, skip
-			if byte < 128 then
-				codepoint = byte
-				skip = 1
-			elseif byte < 224 then
-				codepoint =
-					bit32.bor(bit32.lshift(bit32.band(byte, 0x1F), 6), bit32.band(string.byte(text, i + 1), 0x3F))
-				skip = 2
-			elseif byte < 240 then
-				codepoint = bit32.bor(
-					bit32.lshift(bit32.band(byte, 0x0F), 12),
-					bit32.lshift(bit32.band(string.byte(text, i + 1), 0x3F), 6),
-					bit32.band(string.byte(text, i + 2), 0x3F)
-				)
-				skip = 3
+			local b = string.byte(text, i)
+			local cp, skip
+			if b < 128 then
+				cp, skip = b, 1
+			elseif b < 224 then
+				cp, skip =
+					bit32.bor(bit32.lshift(bit32.band(b, 0x1F), 6), bit32.band(string.byte(text, i + 1), 0x3F)), 2
+			elseif b < 240 then
+				cp, skip =
+					bit32.bor(
+						bit32.lshift(bit32.band(b, 0x0F), 12),
+						bit32.lshift(bit32.band(string.byte(text, i + 1), 0x3F), 6),
+						bit32.band(string.byte(text, i + 2), 0x3F)
+					),
+					3
 			else
-				codepoint = bit32.bor(
-					bit32.lshift(bit32.band(byte, 0x07), 18),
-					bit32.lshift(bit32.band(string.byte(text, i + 1), 0x3F), 12),
-					bit32.lshift(bit32.band(string.byte(text, i + 2), 0x3F), 6),
-					bit32.band(string.byte(text, i + 3), 0x3F)
-				)
-				skip = 4
+				cp, skip =
+					bit32.bor(
+						bit32.lshift(bit32.band(b, 0x07), 18),
+						bit32.lshift(bit32.band(string.byte(text, i + 1), 0x3F), 12),
+						bit32.lshift(bit32.band(string.byte(text, i + 2), 0x3F), 6),
+						bit32.band(string.byte(text, i + 3), 0x3F)
+					),
+					4
 			end
-			-- Para emojis (>0xFFFF), envia como surrogate pairs
-			if codepoint > 0xFFFF then
-				local s = codepoint - 0x10000
-				self._lib:call(
+			if cp > 0xFFFF then
+				local s = cp - 0x10000
+				lib:call(
 					"PostMessageW",
 					"bool",
 					{ "u64", "u32", "u64", "i64" },
-					self._ptr,
+					ptr,
 					WM_CHAR,
 					0xD800 + bit32.rshift(s, 10),
 					0
 				)
-				self._lib:call(
+				lib:call(
 					"PostMessageW",
 					"bool",
 					{ "u64", "u32", "u64", "i64" },
-					self._ptr,
+					ptr,
 					WM_CHAR,
 					0xDC00 + bit32.band(s, 0x3FF),
 					0
 				)
 			else
-				self._lib:call("PostMessageW", "bool", { "u64", "u32", "u64", "i64" }, self._ptr, WM_CHAR, codepoint, 0)
+				lib:call("PostMessageW", "bool", { "u64", "u32", "u64", "i64" }, ptr, WM_CHAR, cp, 0)
 			end
 			i = i + skip
 		end

@@ -3,6 +3,7 @@ local defineClass = require("@ffi-like-roblox")
 local ffi = require("@lune/ffi")
 local Enums = require("@windows-service/Enums")
 local Helpers = require("@windows-service/Helpers")
+local Monitoring = require("@windows-service/Monitoring")
 
 local HWND_TYPE = Helpers.HWND_TYPE
 local getRect = Helpers.getRect
@@ -339,46 +340,7 @@ local WindowClass = defineClass({
 	},
 
 	Methods = {
-		Show = {
-			symbol = "ShowWindow",
-			ret = "bool",
-			args = { "i32" },
-			wrapper = function(l, p)
-				return l:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, p, Enums.ShowType.Normal)
-			end,
-		},
-		Hide = {
-			symbol = "ShowWindow",
-			ret = "bool",
-			args = {},
-			wrapper = function(l, p)
-				return l:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, p, Enums.ShowType.Hide)
-			end,
-		},
-		Minimize = {
-			symbol = "ShowWindow",
-			ret = "bool",
-			args = {},
-			wrapper = function(l, p)
-				return l:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, p, Enums.ShowType.Minimize)
-			end,
-		},
-		Maximize = {
-			symbol = "ShowWindow",
-			ret = "bool",
-			args = {},
-			wrapper = function(l, p)
-				return l:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, p, Enums.ShowType.Maximize)
-			end,
-		},
-		Restore = {
-			symbol = "ShowWindow",
-			ret = "bool",
-			args = {},
-			wrapper = function(l, p)
-				return l:call("ShowWindow", "bool", { HWND_TYPE, "i32" }, p, Enums.ShowType.Restore)
-			end,
-		},
+		-- Show, Hide, Minimize, Maximize, Restore, Close, Focus agora são Actions em InstanceMethods
 		Flash = {
 			symbol = "FlashWindow",
 			ret = "bool",
@@ -405,7 +367,6 @@ local WindowClass = defineClass({
 				)
 			end,
 		},
-		SetFocus = { symbol = "SetForegroundWindow", ret = "bool", args = {} },
 		SetTopMost = {
 			symbol = "SetWindowPos",
 			ret = "bool",
@@ -437,14 +398,6 @@ local WindowClass = defineClass({
 					l:call("mouse_event", "void", { "i32", "i32", "i32", "i32", "u64" }, 2, 0, 0, 0, 0)
 					l:call("mouse_event", "void", { "i32", "i32", "i32", "i32", "u64" }, 4, 0, 0, 0, 0)
 				end
-			end,
-		},
-		Close = {
-			symbol = "PostMessageA",
-			ret = "bool",
-			args = {},
-			wrapper = function(l, p)
-				return l:call("PostMessageA", "bool", { HWND_TYPE, "i32", "i32", "i32" }, p, 16, 0, 0)
 			end,
 		},
 		SendText = {
@@ -623,6 +576,10 @@ local WindowClass = defineClass({
 		Unfocused = true,
 		Changed = true,
 	},
+
+	-- Função de monitoramento para lazy activation
+	MonitoringFunc = Monitoring.startMonitoring,
+	MonitoringRate = 0.1,
 
 	Static = {
 		Alert = {
